@@ -7,12 +7,15 @@
 
 
 import  os
+import  re
 import  sys
 import  contextlib
 import  pickle
 import  inspect
 import  textwrap
 import  warnings
+import  subprocess
+import  time
 from    datetime            import  datetime
 
 import  numpy               as      np
@@ -24,8 +27,15 @@ from    scipy.stats.qmc     import  discrepancy, LatinHypercube
 
 import  toml
 from    tqdm                import  tqdm
+
+import  medeq
+
+from    coexist             import  schedulers
+from    coexist.code_trees  import  code_contains_variable
+from    coexist.code_trees  import  code_substitute_variable
+
 from    coexist.plots       import  format_fig
-from    coexist.utilities   import  autorepr
+from    coexist.utilities   import  autorepr, SignalHandlerKI
 
 import  plotly.express      as      px
 import  plotly.graph_objs   as      go
@@ -48,6 +58,11 @@ except ImportError:
 
 
 
+signal_handler = SignalHandlerKI()
+
+
+
+
 def validate_parameters(parameters):
     '''Validate the free parameters provided or extracted from a user script (a
     ``pandas.DataFrame``).
@@ -58,11 +73,11 @@ def validate_parameters(parameters):
             f"subclass thereof). Received `{type(parameters)}`."
         )))
 
-    columns_needed = ["min", "max"]
+    columns_needed = ["min", "max", "value"]
     if not all(c in parameters.columns for c in columns_needed):
         raise ValueError(textwrap.fill((
-            "The `parameters` DataFrame provided must have at least two "
-            "columns defined: ['min', 'max']. Found these: "
+            "The `parameters` DataFrame provided must have at least three "
+            "columns defined: ['min', 'max', 'value']. Found these: "
             f"`{parameters.columns}`. You can use the "
             "`medeq.create_parameters` function as a helper."
         )))
@@ -183,11 +198,20 @@ class DVASampler:
         x = x.reshape(-1, self.d)
 
         if self.med.gp is None:
-            uncertainty = 1
+            uncertainty = [1]
         else:
-            uncertainty = self.med.gp.posterior_covariance(
-                x, variance_only = True
-            )["v(x)"].mean()
+            # Use all GPs if having multiple responses
+            if not hasattr(self.med.gp, "__iter__"):
+                gp = [self.med.gp]
+            else:
+                gp = self.med.gp
+
+            # Evaluate mean uncertainty for each GP
+            uncertainty = np.ones((len(gp)))
+            for i in range(len(gp)):
+                uncertainty[i] = gp[i].posterior_covariance(
+                    x, variance_only = True
+                )["v(x)"].mean()
 
             # Take previous samples into consideration for discrepancy
             prev = downscale(
@@ -197,7 +221,7 @@ class DVASampler:
             )
             x = np.vstack((prev, x))
 
-        return discrepancy(x) / uncertainty
+        return discrepancy(x) / np.prod(uncertainty)
 
 
     def __repr__(self):
@@ -276,6 +300,7 @@ class MEDPaths:
         self.sampler = os.path.join(self.directory, "sampler.pickle")
 
         self.script = os.path.join(self.directory, "med_script.py")
+        self.results_dir = os.path.join(self.directory, "results")
         self.outputs = os.path.join(self.directory, "outputs")
 
 
@@ -288,7 +313,7 @@ class MEDPaths:
 
         self.directory = prefix
         for attr in ["results", "queue", "setup", "sampler", "script",
-                     "outputs"]:
+                     "results_dir", "outputs"]:
             prev = getattr(self, attr)
 
             if prev is not None:
@@ -314,10 +339,19 @@ class MED:
         Any Python object defining a method ``.sample(med, n)`` returning ``n``
         samples to evaluate.
 
+    scheduler : coexist.schedulers.Scheduler subclass or None
+        An object implementing the ``coexist.schedulers.Scheduler`` interface,
+        defining a method for scheduling function evaluations in a massively
+        parallel context. Only relevant if ``parameters`` is given as a user
+        script.
+
     samples : np.ndarray
         A
 
     responses : np.ndarray or None
+        A
+
+    response_names : list[str] or None
         A
 
     epochs : list[tuple[int, int]]
@@ -338,6 +372,9 @@ class MED:
     results : pd.DataFrame
         [Generated]
 
+    variances : np.ndarray
+        [Generated]
+
     gp : fvgp.gp.GP or None
         [Internal]
 
@@ -351,17 +388,23 @@ class MED:
 
     def __init__(
         self,
-        parameters,             # TODO: Or script
+        parameters,
         response_names = None,
         sampler = DVASampler,
+        scheduler = schedulers.LocalScheduler(),
         seed = None,
         verbose = 3,
     ):
-        # TODO: only generate script if needed
-
         # Type-checking
-        validate_parameters(parameters)
-        self.parameters = parameters
+        if isinstance(parameters, pd.DataFrame):
+            # DataFrame given directly; experiments will be run offline
+            validate_parameters(parameters)
+            self.parameters = parameters
+            self.scheduler = None
+            self.script = None
+        else:
+            # User-script was given; extract parameters and set scheduler
+            self._generate_script(parameters, scheduler)
 
         if response_names is not None:
             if isinstance(response_names, str):
@@ -420,6 +463,27 @@ class MED:
 
 
     @property
+    def variances(self):
+        if self.responses is None:
+            # If no responses were evaluated and no response names were given,
+            # assume a single response
+            if self.response_names is None:
+                nresp = 1
+            else:
+                nresp = len(self.response_names)
+        else:
+            nresp = 1 if self.responses.ndim == 1 else self.responses.shape[1]
+
+        if self.gp is None:
+            return np.empty((0, nresp))
+
+        if nresp == 1:
+            return self.gp.variances
+        else:
+            return np.vstack([gp.variances for gp in self.gp]).T
+
+
+    @property
     def results(self):
         # Extract current responses if any were found
         if self.responses is None:
@@ -438,11 +502,7 @@ class MED:
             nresp = responses.shape[1]
 
         # Extract variances
-        if self.gp is None:
-            variances = np.empty((0, nresp))
-        else:
-            # TODO: handle multiple GPs / variances
-            variances = self.gp.variances
+        variances = self.variances
 
         # Extract column names and ensure correct number thereof
         if nresp == 1:
@@ -486,14 +546,17 @@ class MED:
         if self.gp is None:
             hyperparameters = None
         else:
-            hyperparameters = self.gp.hyperparameters
+            if isinstance(self.gp, list):
+                hyperparameters = [g.hyperparameters.tolist() for g in self.gp]
+            else:
+                hyperparameters = self.gp.hyperparameters.tolist()
 
         setup = {
             "seed": self.seed,
             "verbose": self.verbose,
             "epochs": self.epochs,
             "response_names": self.response_names,
-            "hyperparameters": hyperparameters.tolist(),
+            "hyperparameters": hyperparameters,
             "parameters": self.parameters.to_dict(),
         }
 
@@ -509,13 +572,15 @@ class MED:
 
         # Results and outputs directory are only relevant if we have a MED
         # script rather than simple parameters and "offline" evaluation
-        if False:
-            # TODO: Save script too
-            if not os.path.isdir(self.paths.results):
-                os.mkdir(self.directory)
+        if self.script is not None:
+            with open(self.paths.script, "w") as f:
+                f.writelines(self.script)
 
-            if not os.path.isdir(self.outputs):
-                os.mkdir(self.directory)
+            if not os.path.isdir(self.paths.results_dir):
+                os.mkdir(self.paths.results_dir)
+
+            if not os.path.isdir(self.paths.outputs):
+                os.mkdir(self.paths.outputs)
 
         # Save information about the run
         readmefile = os.path.join(self.paths.directory, "readme.rst")
@@ -524,8 +589,14 @@ class MED:
                 MED System Response Exploration Directory
                 -----------------------------------------
 
-                This directory was generated by MED at {now}.
+                This directory was generated by MED-{__version__} at {now}.
+                MED setup:
+
+                ::
+
             '''))
+
+            f.write(textwrap.indent(str(self), '    '))
 
         # Save evaluated & queued samples and responses found
         self.results.to_csv(self.paths.results, index = None)
@@ -553,6 +624,10 @@ class MED:
         med.parameters = pd.DataFrame.from_dict(setup["parameters"])
         med.response_names = setup.get("response_names", None)
         med.epochs = [tuple(e) for e in setup["epochs"]]
+
+        # Schedulers are platform-specific; when loading MED instances in
+        # platform-agnostic manners, schedulers must be left out
+        med.scheduler = None
 
         # Set derived attributes
         med.samples = np.empty((0, len(med.parameters)))
@@ -676,6 +751,9 @@ class MED:
             )))
 
         if f is None:
+            # If evaluating a user script, generate directory hierarchy
+            if self.paths is None or not os.path.isdir(self.paths.directory):
+                self.save()
             responses = self._evaluate_script()
         elif callable(f):
             responses = self._evaluate_function(f)
@@ -683,7 +761,7 @@ class MED:
             responses = np.asarray(f, dtype = float)
 
         # Type-check responses found
-        if responses.ndim != 1 or len(responses) != len(self.queue):
+        if len(responses) != len(self.queue):
             raise ValueError(textwrap.fill((
                 "Incorrect number of responses given; expected "
                 f"{len(self.queue)} responses for each sample generated. "
@@ -704,6 +782,111 @@ class MED:
 
         self._check_response_names()
         self._train()
+
+        # If a user script was evaluated, immediately save results, as they are
+        # assumed to be long simulations running offline / asynchronously
+        if f is None:
+            self.save(self.paths.directory)
+
+
+    def _evaluate_script(self):
+        # Evaluate the current samples in `queue` using the user-script.
+
+        # Aliases
+        param_names = self.parameters.index
+        start_index = 0 if self.responses is None else len(self.responses)
+        queue = self.queue
+
+        # For every sample to try, start a separate OS process that runs the
+        # `med_seed<seed>/med_script.py` script, which computes and saves
+        # responses
+        processes = []
+
+        # Schedule processes using given scheduler
+        if not hasattr(self, "scheduler_cmd"):
+            self.scheduler_cmd = self.scheduler.generate()
+
+        # These are this epoch's paths to save the simulation outputs to; they
+        # will be given to `self.paths.script` as command-line arguments
+        parameters_paths = [
+            os.path.join(
+                self.paths.results_dir,
+                f"parameters.{start_index + i}.pickle",
+            ) for i in range(len(queue))
+        ]
+
+        response_paths = [
+            os.path.join(
+                self.paths.results_dir,
+                f"response.{start_index + i}.pickle",
+            ) for i in range(len(queue))
+        ]
+
+        # Catch the KeyboardInterrupt (Ctrl-C) signal to shut down the spawned
+        # processes before aborting.
+        try:
+            signal_handler.set()
+
+            # Spawn a separate process for every sample to try / sim to run
+            for i, sample in enumerate(queue):
+                # Create new set of parameters and save them to disk
+                parameters = self.parameters.copy()
+
+                for j, sval in enumerate(sample):
+                    parameters.at[param_names[j], "value"] = sval
+
+                with open(parameters_paths[i], "wb") as f:
+                    pickle.dump(parameters, f)
+
+                processes.append(
+                    subprocess.Popen(
+                        self.scheduler_cmd + [
+                            self.paths.script,
+                            parameters_paths[i],
+                            response_paths[i],
+                        ],
+                        stdout = subprocess.PIPE,
+                        stderr = subprocess.PIPE,
+                        universal_newlines = True,      # outputs in text mode
+                    )
+                )
+
+            # Gather results
+            responses, stdout_rec, stderr_rec, crashed = \
+                self._gather_results(processes, response_paths)
+
+        except KeyboardInterrupt:
+            for proc in processes:
+                proc.kill()
+
+            raise
+
+        finally:
+            signal_handler.unset()
+
+        self._print_status_eval(stdout_rec, stderr_rec, crashed)
+
+        # Find number of error values returned for one successful simulation
+        nresp = 1
+        for i, resp in enumerate(responses):
+            if resp is not None:
+                if nresp == 1:
+                    nresp = len(resp)
+                    continue
+
+                if len(resp) != nresp:
+                    raise ValueError(textwrap.fill((
+                        f"The simulation at index {start_index + i} returned "
+                        f"{len(resp)} responses, while previous simulations "
+                        f"had {nresp} responses."
+                    )))
+
+        # Substitute results that are None (i.e. crashed) with rows of NaNs
+        for i in range(len(responses)):
+            if responses[i] is None:
+                responses[i] = np.full(nresp, np.nan)
+
+        return np.array(responses)
 
 
     def _evaluate_function(self, f):
@@ -732,12 +915,11 @@ class MED:
                 f"`{samples.shape}`."
             )))
 
-        if responses.ndim != 1 or len(responses) != len(samples):
+        if len(responses) != len(samples):
             raise ValueError(textwrap.fill((
-                "The input `responses` must be a 1D vector with the same "
-                "number of values as the number of rows in `samples`. "
-                f"Received {len(responses)} responses for {len(samples)} "
-                "samples."
+                "The input `responses` must be a vector / matrix with the "
+                "same number of values / rows as `samples`. Received "
+                f"{len(responses)} responses for {len(samples)} samples."
             )))
 
         # Append new samples and responses to current ones. Also move the
@@ -810,25 +992,325 @@ class MED:
         return self.sr
 
 
-    def _train(self):
-        if self.gp is None:
-            self.gp = GP(
-                len(self.parameters),
-                points = self.evaluated,
-                values = self.responses,
-                init_hyperparameters = np.ones(1 + len(self.parameters)),
-                variances = np.abs(0.01 * self.responses),
-                use_inv = True,
+    def _generate_script(self, script_path, scheduler):
+        # Given a path to a user-defined simulation script, extract the free
+        # parameters and generate the MED script.
+
+        # Type-check and generate scheduler commands
+        if not isinstance(scheduler, schedulers.Scheduler):
+            raise TypeError(textwrap.fill((
+                "The input `scheduler` must be a subclass of `coexist."
+                f"schedulers.Scheduler`. Received {type(scheduler)}."
+            )))
+
+        self.scheduler = scheduler
+
+        # Extract parameters and generate ACCES script
+        with open(script_path, "r") as f:
+            user_code = f.readlines()
+
+        # Find the two parameter definition directives
+        params_start_line = None
+        params_end_line = None
+
+        regex_prefix = r"#+\s*MED\s+PARAMETERS"
+        params_start_finder = re.compile(regex_prefix + r"\s+START")
+        params_end_finder = re.compile(regex_prefix + r"\s+END")
+
+        for i, line in enumerate(user_code):
+            if params_start_finder.match(line):
+                params_start_line = i
+
+            if params_end_finder.match(line):
+                params_end_line = i
+
+        if params_start_line is None or params_end_line is None:
+            raise NameError(textwrap.fill((
+                f"The user script found in file `{script_path}` did not "
+                "contain the blocks `# MED PARAMETERS START` and "
+                "`# MED PARAMETERS END`. Please define your simulation "
+                "free parameters between these two comments / directives."
+            )))
+
+        # Execute the code between the two directives to get the initial
+        # `parameters`. `exec` saves all the code's variables in the
+        # `parameters_exec` dictionary
+        user_params_code = "".join(
+            user_code[params_start_line:params_end_line]
+        )
+        user_params_exec = dict()
+        exec(user_params_code, user_params_exec)
+
+        if "parameters" not in user_params_exec:
+            raise NameError(textwrap.fill((
+                "The code between the user script's directives "
+                "`# MED PARAMETERS START` and "
+                "`# MED PARAMETERS END` does not define a variable "
+                "named exactly `parameters`."
+            )))
+
+        validate_parameters(user_params_exec["parameters"])
+        self.parameters = user_params_exec["parameters"]
+
+        if not code_contains_variable(user_code, "response"):
+            raise NameError(textwrap.fill((
+                f"The user script found in file `{script_path}` does not "
+                "define the required variable `response`."
+            )))
+
+        # Substitute the `parameters` creation in the user code with loading
+        # them from a MED-defined location
+        parameters_code = [
+            "\n# Unpickle `parameters` from this script's first " +
+            "command-line argument and set\n",
+            '# `med_id` to a unique simulation ID\n',
+            code_substitute_variable(
+                user_code[params_start_line:params_end_line],
+                "parameters",
+                ('with open(sys.argv[1], "rb") as f:\n'
+                 '    parameters = pickle.load(f)\n')
             )
-        else:
-            self.gp.update_gp_data(
-                self.evaluated,
-                self.responses,
-                np.abs(0.01 * self.responses),
+        ]
+
+        # Also define a unique ACCESS ID for each simulation
+        parameters_code += (
+            'med_id = int(sys.argv[1].split(".")[-2])\n'
+        )
+
+        # Read in the `async_access_template.py` code template and find the
+        # code injection directives
+        template_code_path = os.path.join(
+            os.path.split(medeq.__file__)[0],
+            "template_med_script.py"
+        )
+
+        with open(template_code_path, "r") as f:
+            template_code = f.readlines()
+
+        for i, line in enumerate(template_code):
+            if line.startswith("# MED INJECT USER CODE START"):
+                inject_start_line = i
+
+            if line.startswith("# MED INJECT USER CODE END"):
+                inject_end_line = i
+
+        generated_code = "".join((
+            template_code[:inject_start_line + 1] +
+            user_code[:params_start_line + 1] +
+            parameters_code +
+            user_code[params_end_line:] +
+            template_code[inject_end_line:]
+        ))
+
+        self.script = generated_code
+
+
+    def _gather_results(self, processes, response_paths):
+        # Load parallel-executed results from user script
+        if not hasattr(self, "_stdout"):
+            self._stdout = None
+
+        if not hasattr(self, "_stderr"):
+            self._stderr = None
+
+        responses = []
+        stdout_rec = []
+        stderr_rec = []
+        crashed = []
+
+        # Occasionally check if jobs finished
+        wait = 0.1          # Time between checking results
+        waited = 0.         # Total time waited
+        logged = 0          # Number of times logged remaining simulations
+        tlog = 30 * 60      # Time until logging remaining simulations again
+
+        while wait != 0:
+            done = sum((p.poll() is not None for p in processes))
+
+            if done == len(processes):
+                wait = 0
+                for i, proc in enumerate(processes):
+                    proc_index = int(proc.args[-1].split(".")[-2])
+                    stdout, stderr = proc.communicate()
+
+                    # If a *new* output message was recorded in stdout, log it
+                    if len(stdout) and stdout != self._stdout:
+                        stdout_rec.append(proc_index)
+                        self._stdout = stdout
+
+                        stdout_log = os.path.join(
+                            self.paths.outputs,
+                            f"stdout.{proc_index}.log",
+                        )
+                        with open(stdout_log, "w") as f:
+                            f.write(self._stdout)
+
+                    # If a *new* error message was recorded in stderr, log it
+                    if len(stderr) and stderr != self._stderr:
+                        stderr_rec.append(proc_index)
+                        self._stderr = stderr
+
+                        stderr_log = os.path.join(
+                            self.paths.outputs,
+                            f"stderr.{proc_index}.log",
+                        )
+                        with open(stderr_log, "w") as f:
+                            f.write(self._stderr)
+
+                    # Load result if the file exists, otherwise set it to NaN
+                    if os.path.isfile(response_paths[i]):
+                        with open(response_paths[i], "rb") as f:
+                            response = pickle.load(f)
+
+                            # If it's a dictionary[resp_name -> resp_val]
+                            if hasattr(response, "items") and \
+                                    callable(response.items):
+
+                                resp = []
+                                resp_names = []
+                                for k, v in response.items():
+                                    resp_names.append(k)
+                                    resp.append(v)
+
+                                resp = np.array(resp, dtype = float)
+                                self.response_names = resp_names
+
+                            # If it's a list-like of responses
+                            elif hasattr(response, "__iter__"):
+                                resp = np.array(response, dtype = float)
+
+                            # If it's a single response
+                            else:
+                                resp = np.array([response], dtype = float)
+
+                            responses.append(resp)
+                    else:
+                        responses.append(None)
+                        crashed.append(proc_index)
+
+            # Every `remaining` seconds print remaining jobs
+            if (
+                self.verbose >= 4 and
+                wait != 0 and
+                waited > (logged + 1) * tlog
+            ):
+                logged += 1
+                tlog *= 1.5
+
+                remaining = " ".join([
+                    p.args[-1].split(".")[-2]
+                    for p in processes if p.poll() is None
+                ])
+
+                minutes = int(waited / 60)
+                if minutes > 60:
+                    timer = f"{minutes // 60} h {minutes % 60} min"
+                else:
+                    timer = f"{minutes} min"
+
+                print((
+                    f"  * Remaining jobs after {timer}:\n" +
+                    textwrap.indent(textwrap.fill(remaining), "  * ")
+                ), flush = True)
+
+            # Wait for increasing numbers of seconds until checking for results
+            # again - at most 1 minute
+            time.sleep(wait)
+            waited += wait
+            wait = min(wait * 1.5, 60)
+
+        return responses, stdout_rec, stderr_rec, crashed
+
+
+    def _print_status_eval(self, stdout_rec, stderr_rec, crashed):
+        # Print logged stdout and stderr messages and crashed simulations
+        # after evaluating an epoch.
+        line = "-" * 80
+        if len(stderr_rec):
+            stderr_rec_str = textwrap.fill(" ".join(
+                str(s) for s in stderr_rec
+            ))
+            print(
+                line + "\n" +
+                "New stderr messages were recorded while running jobs:\n" +
+                textwrap.indent(stderr_rec_str, "  ") + "\n" +
+                f"The error messages were logged in:\n  {self.paths.outputs}",
+                flush = True,
             )
 
+        if len(stdout_rec):
+            stdout_rec_str = textwrap.fill(" ".join(
+                str(s) for s in stdout_rec
+            ))
+            print(
+                line + "\n" +
+                "New stdout messages were recorded while running jobs:\n" +
+                textwrap.indent(stdout_rec_str, "  ") + "\n" +
+                f"The output messages were logged in:\n  {self.paths.outputs}",
+                flush = True,
+            )
+
+        if len(crashed):
+            crashed_str = textwrap.fill(" ".join(
+                str(c) for c in crashed
+            ))
+
+            print(
+                line + "\n" +
+                "No results were found for these jobs:\n" +
+                textwrap.indent(crashed_str, "  ") + "\n" +
+                "They crashed or terminated early; for details, check the "
+                f"output logs in:\n  {self.paths.outputs}\n"
+                "The error values for these simulations were set to NaN.",
+                flush = True,
+            )
+
+        if len(stderr_rec) or len(stdout_rec) or len(crashed):
+            print(line + "\n")
+
+
+    def _train(self):
+        # Train fvgp.GP Gaussian Processes surrogates for each response
+        if self.responses.ndim == 1:
+            nresp = 1
+            responses = self.responses[:, np.newaxis]
+        else:
+            nresp = self.responses.shape[1]
+            responses = self.responses
+
+        # First time training, create new GP (single response) / GPs (multi)
+        if self.gp is None:
+            self.gp = [None] * nresp
+
+            for i in range(nresp):
+                self.gp[i] = GP(
+                    len(self.parameters),
+                    points = self.evaluated,
+                    values = responses[:, i],
+                    init_hyperparameters = np.ones(1 + len(self.parameters)),
+                    variances = np.abs(0.01 * responses[:, i]),
+                    use_inv = True,
+                )
+
+            if len(self.gp) == 1:
+                self.gp = self.gp[0]
+
+        # New training data, update GPs
+        else:
+            gps = [self.gp] if nresp == 1 else self.gp
+
+            for i in range(len(gps)):
+                gps[i].update_gp_data(
+                    self.evaluated,
+                    responses[:, i],
+                    np.abs(0.01 * responses[:, i]),
+                )
+
+        # Train GPs' hyperparameters using our internal CMA-ES method
         with open(os.devnull, "w") as f, contextlib.redirect_stdout(f):
-            self.gp.train(None, method = self._train_gp_method)
+            gps = [self.gp] if nresp == 1 else self.gp
+            for gp in gps:
+                gp.train(None, method = self._train_gp_method)
 
 
     def _train_gp_method(self, gp):
@@ -1011,14 +1493,23 @@ class MED:
 
     def __repr__(self):
         parameters = textwrap.indent(str(self.parameters), '  ')
-        response_names = textwrap.indent(
-            textwrap.fill(", ".join(self.response_names)),
-            '  ',
-        )
+
+        if self.response_names is None:
+            response_names = "  None"
+        else:
+            response_names = textwrap.indent(
+                textwrap.fill(", ".join(self.response_names)),
+                '  ',
+            )
 
         samples = str_summary(self.samples)
         responses = str_summary(self.responses)
         epochs = f"list[{len(self.epochs)}, tuple[int, int]]"
+
+        if self.scheduler is not None:
+            scheduler = f"scheduler = {self.scheduler.__class__.__name__}\n"
+        else:
+            scheduler = ""
 
         docstr = (
             f"MED(seed={self.seed})\n"
@@ -1027,6 +1518,7 @@ class MED:
             f"response_names = \n{response_names}\n"
             "--\n"
             f"sampler =   {self.sampler}\n"
+            f"{scheduler}"
             f"samples =   {samples}\n"
             f"responses = {responses}\n"
             f"epochs =    {epochs}\n"
@@ -1034,8 +1526,7 @@ class MED:
 
         maxline = max(len(d) for d in docstr)
         for i in range(len(docstr)):
-            docstr[i] += (maxline - len(docstr[i]) + 1) * " "
-            if docstr[i][1] == "-":
+            if len(docstr[i]) > 1 and docstr[i][1] == "-":
                 docstr[i] = "-" * maxline
 
         return "\n".join(docstr)

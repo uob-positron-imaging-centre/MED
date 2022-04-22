@@ -18,6 +18,7 @@ def create_parameters(
     variables = [],
     minimums = [],
     maximums = [],
+    values = None,
     **kwargs,
 ):
     '''Create a ``pandas.DataFrame`` storing ``MED`` free parameters' names,
@@ -84,14 +85,20 @@ def create_parameters(
     separation   -2.0 -7.0  3.0    4.0
     '''
 
-    if not len(variables) == len(minimums) == len(maximums):
+    if not len(variables) == len(minimums) == len(maximums) or \
+            (values is not None and len(values) != len(variables)):
         raise ValueError(textwrap.fill((
-            "The input iterables `variables`, `minimums`, `maximums` must all "
-            "have the same lengths."
+            "The input iterables `variables`, `minimums`, `maximums` and "
+            "`values` (if defined) must all have the same lengths."
         )))
 
     minimums = np.array(minimums, dtype = float)
     maximums = np.array(maximums, dtype = float)
+
+    if values is None:
+        values = (maximums + minimums) / 2
+    else:
+        values = np.array(values, dtype = float)
 
     if not np.all(minimums < maximums):
         raise ValueError(textwrap.fill((
@@ -101,6 +108,7 @@ def create_parameters(
 
     parameters = pd.DataFrame(
         data = {
+            "value": values,
             "min": minimums,
             "max": maximums,
             **kwargs,
