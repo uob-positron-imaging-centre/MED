@@ -104,7 +104,7 @@ def downscale(x, lo, hi):
 def sampler(f):
     '''Decorator making a user-defined function a MED sampler.
 
-    A MED sampler is simply an object defining the method ``.sample(med, n)``,
+    A MED sampler is simply an object defining the method ``.sample(n, med)``,
     where ``med`` is a complete MED instance (for e.g. using historical
     sampling information) and ``n`` is the number of samples between [0, 1) to
     return.
@@ -121,7 +121,7 @@ def sampler(f):
         import numpy as np
 
         @medeq.sampler
-        def user_sampler(med, n):
+        def user_sampler(n, med = None):
             num_parameters = len(med.parameters)
             return np.random.random((n, num_parameters))
     '''
@@ -141,7 +141,7 @@ class DVASampler:
         self.seed = seed
 
 
-    def sample(self, med, n):
+    def sample(self, n, med):
         # Save the MED instance as an attribute to be accessed in `.cost`
         if med is None:
             class MEDNotGiven:
@@ -239,7 +239,7 @@ class RandomSampler:
         self.rng = np.random.default_rng(self.seed)
 
 
-    def sample(self, med, n):
+    def sample(self, n, med = None):
         return self.rng.random((n, self.d))
 
 
@@ -258,7 +258,7 @@ class LatticeSampler:
         self.rng = np.random.default_rng(self.seed)
 
 
-    def sample(self, med, n):
+    def sample(self, n, med = None):
         # Generate regular lattice with the closest number of points to `n`
         nd = int(np.ceil(n ** (1 / self.d)))
         lattice = np.meshgrid(*([np.linspace(0, 0.999999, nd)] * self.d))
@@ -327,6 +327,145 @@ class MED:
     '''Autonomously explore system responses and discover underlying physical
     laws / correlations.
 
+    Exploring systems responses can be done in one of two ways:
+
+    1. Locally / manually: running experiments / simulations, then feeding
+       results back to MED).
+    2. Massively parallel: for complex simulations that can be launched in
+       Python, MED can automatically change simulation parameters and run them
+       in parallel on OS processes (locally) or SLURM jobs (distributed
+       clusters).
+
+    A typical local workflow is:
+
+    1. Define free parameters to explore as a ``pd.DataFrame`` - you can use
+       the ``medeq.create_parameters`` function for this.
+
+    >>> import medeq
+    >>> parameters = medeq.create_parameters(
+    >>>     ["A", "B"],
+    >>>     minimums = [-5., -5.],
+    >>>     maximums = [10., 10.],
+    >>> )
+    >>> print(parameters)
+       value  min   max
+    A    2.5 -5.0  10.0
+    B    2.5 -5.0  10.0
+
+    2. Create a ``medeq.MED`` object and generate samples (i.e. parameter
+       combinations) to evaluate - the default sampler covers the parameter
+       space as efficiently as possible, taking previous results into account;
+       use the ``MED.sample(n)`` method to get ``n`` samples to try.
+
+    >>> med = medeq.MED(parameters)
+    >>> print(med)
+    MED(seed=42)
+    ---------------------------------------
+    parameters =
+         value  min   max
+      A    2.5 -5.0  10.0
+      B    2.5 -5.0  10.0
+    response_names =
+      None
+    ---------------------------------------
+    sampler =   DVASampler(d=2, seed=42)
+    samples =   np.ndarray[(0, 2), float64]
+    responses = NoneType
+    epochs =    list[0, tuple[int, int]]
+
+    >>> med.sample(5)
+    array([[-3.33602115, -0.45639296],
+           [ 5.55496225,  5.554965  ],
+           [ 2.72771903, -3.48852585],
+           [-0.45639308,  8.33602069],
+           [ 8.48852568,  2.27228172]])
+
+    3. For a local / offline workflow, these samples can be evaluated in one of
+       two ways:
+
+       - Evaluate samples manually, offline - i.e. run experiments,
+         simulations, etc. and feed them back to MED.
+       - Let MED evaluate a simple Python function / model.
+
+    >>> # Evaluate samples manually - run experiments, simulations, etc.
+    >>> to_evaluate = med.queue
+    >>> responses = [1, 2, 3, 4, 5]
+    >>> med.evaluate(responses)
+    >>>
+    >>> # Or evaluate simple Python function / model
+    >>> def instrument(sample):
+    >>>     return sample[0] + sample[1]
+    >>>
+    >>> med.evaluate(instrument)
+    >>> med.results
+              A         B  variance   response
+    0 -3.336021 -0.456393  0.037924  -3.792414
+    1  5.554962  5.554965  0.111099  11.109927
+    2  2.727719 -3.488526  0.007608  -0.760807
+    3 -0.456393  8.336021  0.078796   7.879628
+    4  8.488526  2.272282  0.107608  10.760807
+
+    For a massively parallel workflow, e.g. using a complex simulation, all
+    you need is a standalone Python script that:
+
+    - Defines its free parameters between two "# MED PARAMETERS START / END"
+      directives.
+    - Runs the simulation in _any_ way - define simulation inline, launch it
+      on a supercomputer and collect results, etc.
+    - Defines a variable "response" for the simulated output of interest -
+      either as a single number or a list of numbers (multi-response).
+
+    Here is a simple example of a MED script:
+
+    ::
+
+        # In file `simulation_script.py`
+
+        # MED PARAMETERS START
+        import medeq
+
+        parameters = medeq.create_parameters(
+            ["A", "B", "C"],
+            [-5., -5., -5.],
+            [10., 10., 10.],
+        )
+        # MED PARAMETERS END
+
+        # Run simulation in any way, locally, on a supercomputer and collect
+        # results - then define the variable `response` (float or list[float])
+        values = parameters["value"]
+        response = values["A"]**2 + values["B"]**2
+
+    If you have previous, separate experimental data, you can ``MED.augment``
+    the dataset of responses:
+
+    >>> # Augment dataset of responses with historical data
+    >>> samples = [
+    >>>     [1, 1],
+    >>>     [2, 2],
+    >>>     [1, 2],
+    >>> ]
+    >>>
+    >>> responses = [1, 2, 3]
+    >>> med.augment(samples, responses)
+
+    To discover the underlying equation, you need to install Julia (a
+    beautiful, high-performance programming language) on your system and the
+    PySR library:
+
+    1. Install Julia manually (see `https://julialang.org/downloads/`_).
+    2. ``pip install pysr``
+    3. ``python -c 'import pysr; pysr.install()'``
+
+    And now discover underlying equations!
+
+    >>> med.discover(binary_operators = ["+", "*"])
+    Hall of Fame:
+    -----------------------------------------
+    Complexity  Loss       Score     Equation
+    1           2.412e+01  5.296e-01  B
+    3           0.000e+00  1.151e+01  (A + B)
+
     Attributes
     ----------
     parameters : pd.DataFrame
@@ -336,7 +475,7 @@ class MED:
         A
 
     sampler : object
-        Any Python object defining a method ``.sample(med, n)`` returning ``n``
+        Any Python object defining a method ``.sample(n, med)`` returning ``n``
         samples to evaluate.
 
     scheduler : coexist.schedulers.Scheduler subclass or None
@@ -345,10 +484,10 @@ class MED:
         parallel context. Only relevant if ``parameters`` is given as a user
         script.
 
-    samples : np.ndarray
+    samples : (M, P) np.ndarray
         A
 
-    responses : np.ndarray or None
+    responses : (N, K) np.ndarray or None
         A
 
     response_names : list[str] or None
@@ -366,16 +505,16 @@ class MED:
     queue : np.ndarray
         [Generated]
 
-    evaluated : np.ndarray
+    evaluated : (N, P) np.ndarray
         [Generated]
 
     results : pd.DataFrame
         [Generated]
 
-    variances : np.ndarray
+    variances : (N, K) np.ndarray
         [Generated]
 
-    gp : fvgp.gp.GP or None
+    gp : list[fvgp.gp.GP] or None
         [Internal]
 
     sr : pysr.PySRRegressor or None
@@ -383,7 +522,6 @@ class MED:
 
     paths : medeq.med.MEDPaths or None
         [Internal]
-
     '''
 
     def __init__(
@@ -472,15 +610,12 @@ class MED:
             else:
                 nresp = len(self.response_names)
         else:
-            nresp = 1 if self.responses.ndim == 1 else self.responses.shape[1]
+            nresp = self.responses.shape[1]
 
         if self.gp is None:
             return np.empty((0, nresp))
 
-        if nresp == 1:
-            return self.gp.variances
-        else:
-            return np.vstack([gp.variances for gp in self.gp]).T
+        return np.vstack([gp.variances for gp in self.gp]).T
 
 
     @property
@@ -497,8 +632,6 @@ class MED:
             responses = np.empty((0, nresp))
         else:
             responses = self.responses
-            if responses.ndim == 1:
-                responses = responses[:, np.newaxis]
             nresp = responses.shape[1]
 
         # Extract variances
@@ -546,10 +679,7 @@ class MED:
         if self.gp is None:
             hyperparameters = None
         else:
-            if isinstance(self.gp, list):
-                hyperparameters = [g.hyperparameters.tolist() for g in self.gp]
-            else:
-                hyperparameters = self.gp.hyperparameters.tolist()
+            hyperparameters = [g.hyperparameters.tolist() for g in self.gp]
 
         setup = {
             "seed": self.seed,
@@ -657,7 +787,7 @@ class MED:
 
 
     def sample(self, n):
-        new = self.sampler.sample(self, n)
+        new = self.sampler.sample(n, self)
         new = np.asarray(new, dtype = float)
 
         # If it's a simple (row) vector, transform it into a 2D column
@@ -736,8 +866,14 @@ class MED:
 
         1. The user evaluated the `MED.queue` values separately (e.g. ran
            experiments) - then simply supply a NumPy array of responses.
+
+        >>> med.evaluate([1, 2, 3])
+
         2. A simple Python function is supplied that will be evaluated for each
            sample; the function must accept a single NumPy vector.
+
+        >>> med.
+
         3. If a separate Python script was provided when the class was created,
            nothing else is needed; this function will launch jobs and collect
            responses from the user script.
@@ -759,6 +895,10 @@ class MED:
             responses = self._evaluate_function(f)
         else:
             responses = np.asarray(f, dtype = float)
+
+        # Ensure 2D shape
+        if responses.ndim == 1:
+            responses = responses[:, np.newaxis]
 
         # Type-check responses found
         if len(responses) != len(self.queue):
@@ -905,6 +1045,9 @@ class MED:
         # If samples is a simple (row) vector, transform it into a 2D column
         if samples.ndim == 1:
             samples = samples[:, np.newaxis]
+
+        if responses.ndim == 1:
+            responses = responses[:, np.newaxis]
 
         # Type-check samples and responses shapes
         if samples.ndim != 2 or samples.shape[1] != len(self.parameters):
@@ -1292,15 +1435,10 @@ class MED:
                     use_inv = True,
                 )
 
-            if len(self.gp) == 1:
-                self.gp = self.gp[0]
-
         # New training data, update GPs
         else:
-            gps = [self.gp] if nresp == 1 else self.gp
-
-            for i in range(len(gps)):
-                gps[i].update_gp_data(
+            for i in range(len(self.gp)):
+                self.gp[i].update_gp_data(
                     self.evaluated,
                     responses[:, i],
                     np.abs(0.01 * responses[:, i]),
@@ -1308,8 +1446,7 @@ class MED:
 
         # Train GPs' hyperparameters using our internal CMA-ES method
         with open(os.devnull, "w") as f, contextlib.redirect_stdout(f):
-            gps = [self.gp] if nresp == 1 else self.gp
-            for gp in gps:
+            for gp in self.gp:
                 gp.train(None, method = self._train_gp_method)
 
 

@@ -25,12 +25,10 @@ def create_parameters(
     bounds.
 
     This is simply a helper returning a ``pandas.DataFrame`` with the format
-    required by e.g. ``pymed.Sampling``.
+    required by e.g. ``medeq.Sampling``.
 
     Only the `variables`, `minimums` and `maximums` are necessary. If unset,
-    the initial ``values`` are set to halfway between the lower and upper
-    bounds; the initial standard deviation ``sigma`` is set to 40% of this
-    range, so that the entire space is explored.
+    the initial ``values`` are set to halfway between the lower and upper.
 
     Parameters
     ----------
@@ -49,13 +47,6 @@ def create_parameters(
         The optimisation starting values; not essential as ACCES samples the
         space randomly anyways. If unset, they are set to halfway between
         ``minimums`` and ``maximums``.
-
-    sigma : list[float], optional
-        The initial standard deviation in each variable, setting how far away
-        from the initial ``values`` the parameters will be sampled; the
-        sampling is Gaussian. If unset, they are set to 40% of the data range
-        (i.e. ``maximums`` - ``minimums``) so that the entire space is
-        initially explored. ACCES will adapt and minimise this uncertainty.
 
     **kwargs : other keyword arguments
         Other columns to include in the returned parameters DataFrame, given
