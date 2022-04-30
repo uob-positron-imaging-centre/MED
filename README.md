@@ -80,7 +80,7 @@ med.discover(
 med.plot_gp()
 ```
 
-![MED-Usage-Output](https://github.com/uob-positron-imaging-centre/MED/docs/source/_static/usage-output.png?raw=true "MED-Usage-Output.")
+![MED-Usage-Output](https://github.com/uob-positron-imaging-centre/MED/blob/main/docs/source/_static/usage-output.png?raw=true)
 
 
 
