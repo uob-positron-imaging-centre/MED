@@ -28,8 +28,6 @@ from    scipy.stats.qmc     import  discrepancy, LatinHypercube
 import  toml
 from    tqdm                import  tqdm
 
-import  medeq
-
 from    coexist             import  schedulers
 from    coexist.code_trees  import  code_contains_variable
 from    coexist.code_trees  import  code_substitute_variable
@@ -41,6 +39,7 @@ import  plotly.express      as      px
 import  plotly.graph_objs   as      go
 from    plotly.subplots     import  make_subplots
 
+import  medeq
 from    .__version__        import  __version__
 from    .utilities          import  str_summary
 
@@ -146,10 +145,8 @@ class DVASampler:
         if med is None:
             class MEDNotGiven:
                 gp = None
-            self.med = MEDNotGiven()
-        elif isinstance(med, MED):
-            self.med = med
-        else:
+            med = MEDNotGiven()
+        elif not isinstance(med, MED):
             raise TypeError(textwrap.fill((
                 "The input `med` argument may be either `None` or an instance "
                 f"of `medeq.MED`. Received `{type(med)}`."
@@ -173,7 +170,7 @@ class DVASampler:
                 iterations = 0
                 nit = 100
                 while not es.stop():
-                    es.optimize(self.cost, iterations = nit)
+                    es.optimize(self.cost, iterations = nit, args = (med,))
                     iterations += nit
 
                     pbar.update(nit)
@@ -194,30 +191,24 @@ class DVASampler:
         return es.result.xbest.reshape(-1, self.d)
 
 
-    def cost(self, x):
+    def cost(self, x, med):
         x = x.reshape(-1, self.d)
 
-        if self.med.gp is None:
+        if med.gp is None:
             uncertainty = [1]
         else:
-            # Use all GPs if having multiple responses
-            if not hasattr(self.med.gp, "__iter__"):
-                gp = [self.med.gp]
-            else:
-                gp = self.med.gp
-
             # Evaluate mean uncertainty for each GP
-            uncertainty = np.ones((len(gp)))
-            for i in range(len(gp)):
-                uncertainty[i] = gp[i].posterior_covariance(
+            uncertainty = np.ones((len(med.gp)))
+            for i in range(len(med.gp)):
+                uncertainty[i] = med.gp[i].posterior_covariance(
                     x, variance_only = True
                 )["v(x)"].mean()
 
             # Take previous samples into consideration for discrepancy
             prev = downscale(
-                self.med.evaluated,
-                self.med.parameters["min"].to_numpy(),
-                self.med.parameters["max"].to_numpy(),
+                med.evaluated,
+                med.parameters["min"].to_numpy(),
+                med.parameters["max"].to_numpy(),
             )
             x = np.vstack((prev, x))
 
@@ -330,7 +321,7 @@ class MED:
     Exploring systems responses can be done in one of two ways:
 
     1. Locally / manually: running experiments / simulations, then feeding
-       results back to MED).
+       results back to MED.
     2. Massively parallel: for complex simulations that can be launched in
        Python, MED can automatically change simulation parameters and run them
        in parallel on OS processes (locally) or SLURM jobs (distributed
@@ -685,6 +676,7 @@ class MED:
             "seed": self.seed,
             "verbose": self.verbose,
             "epochs": self.epochs,
+            "parameter_names": self.parameters.index.to_list(),
             "response_names": self.response_names,
             "hyperparameters": hyperparameters,
             "parameters": self.parameters.to_dict(),
@@ -1095,7 +1087,8 @@ class MED:
         niterations = 100,
         ncyclesperiteration = 32,
         populations = 32,
-        use_symbolic_utils = True,
+        frequency = False,
+        symbolic_utils = True,
         multithreading = True,
         progress = False,
         **kwargs,
@@ -1122,7 +1115,8 @@ class MED:
             niterations = niterations,
             ncyclesperiteration = ncyclesperiteration,
             populations = populations,
-            use_symbolic_utils = use_symbolic_utils,
+            useFrequency = frequency,
+            use_symbolic_utils = symbolic_utils,
             multithreading = multithreading,
             equation_file = "equations",
             temp_equation_file = "equations_temp",
@@ -1501,6 +1495,58 @@ class MED:
                 warnings.warn(msg, RuntimeWarning, stacklevel = 3)
 
                 del self.response_names[nresp:]
+
+
+    def plot_gp(
+        self,
+        response = 0,
+        resolution = (32, 32),
+        julia_project = None,
+        quiet = False,
+    ):
+        '''Plot interactive 2D slices of the `response` and uncertainty.
+        '''
+        # Compute index of response to plot
+        try:
+            rid = int(response)
+        except ValueError:
+            rid = self.response_names.index(response)
+
+        # Type-check responses
+        resolution = tuple([int(r) for r in resolution])
+        if len(resolution) != 2:
+            raise ValueError(textwrap.fill((
+                "The input `resolution` must be a tuple with two integers, "
+                "e.g. `resolution = (32, 32)`."
+            )))
+
+        # Save results
+        if self.paths is None:
+            self.save()
+        else:
+            self.save(self.paths.directory)
+
+        medpath = self.paths.directory
+
+        # Path to Julia plotting code
+        script = os.path.join(
+            os.path.split(medeq.__file__)[0],
+            "plot_gp.jl",
+        )
+
+        # Run subprocess OS command using the Julia executable
+        julia = medeq.base.get_julia_executable()
+        julia_project, _ = medeq.base.get_julia_project(julia_project)
+
+        subprocess.run([
+            julia,
+            f"--project={julia_project}",
+            script,
+            medpath,
+            str(rid + 1),
+            str(resolution[0]),
+            str(resolution[1]),
+        ])
 
 
     def plot_response(

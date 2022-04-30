@@ -4,9 +4,8 @@
 # Date   : 04.04.2022
 
 
-using CSV
 using TOML
-using DataFrames
+using DelimitedFiles
 
 using Printf
 using LinearAlgebra
@@ -18,30 +17,9 @@ using Colors
 
 
 
-medpath = "med_seed123"
-
-setup = TOML.parsefile("$medpath/med_setup.toml")
-data = CSV.File("$medpath/responses.csv") |> DataFrame
-
-mins = setup["parameters"]["min"]
-maxs = setup["parameters"]["max"]
-parameters = names(data)[1:length(mins)]
-
-
-# Save training data in a NamedTuple with StaticArrays and Tuples for maximum optimisations
-xtrain = data[:, 1:length(parameters)] |> Matrix
-ytrain = data[:, end] |> Vector
-
-med = (
-    parameters = parameters |> Tuple,
-    xtrain = xtrain,
-    ytrain = ytrain,
-    hyperparameters = setup["hyperparameters"] |> Tuple,
-    mins = [mins[p] for p in parameters] |> Tuple,
-    maxs = [maxs[p] for p in parameters] |> Tuple,
-)
-
-
+# This GP implementation follows the one used in Marcus Noack's fvGP library,
+# with some aggressive optimisation and caching for interactive plotting.
+# Thank you.
 function matern(d)
     (1. + sqrt(3.) * d) * exp(-sqrt(3.) * d)
 end
@@ -64,7 +42,6 @@ function kernel(x1, x2, hp)
 end
 
 
-# TODO: give credits
 function cov_prod(x, y, hyperparameters)
     k = kernel(x, x, hyperparameters)
 
@@ -389,5 +366,68 @@ end
 end
 
 
-fig = generate_plot(med, (32, 32))
-display(fig)
+function read_med(medpath, response_index)
+    setup = TOML.parsefile("$medpath/setup.toml")
+    data = readdlm("$medpath/results.csv", ',', skipstart=1)
+
+    mins = setup["parameters"]["min"]
+    maxs = setup["parameters"]["max"]
+    parameters = setup["parameter_names"]
+
+    # Data to train Gaussian Processes on
+    xtrain = data[:, 1:length(parameters)] |> Matrix
+    ytrain = data[:, length(parameters) + 2 * response_index] |> Vector
+
+    # Save training data in a NamedTuple with Tuples to maximise optimisations
+    med = (
+        parameters = parameters |> Tuple,
+        xtrain = xtrain,
+        ytrain = ytrain,
+        hyperparameters = setup["hyperparameters"][response_index] |> Tuple,
+        mins = [mins[p] for p in parameters] |> Tuple,
+        maxs = [maxs[p] for p in parameters] |> Tuple,
+    )
+
+    med
+end
+
+
+"""
+    plot_gp(medpath[, response_index=1, resolution=(32, 32)])
+
+Plot a system response & uncertainty saved by a MED object at `medpath`.
+
+Plots 2D slices through the parameter space of the Gaussian Process quantifying outputs and
+variances of a single response of interest (eg `response_index = 1` returns the first
+response).
+
+# Examples
+
+```julia-repl
+julia> include("plot_gp.jl")
+julia> plot_gp("med_seed123") |> display
+```
+"""
+function plot_gp(medpath, response_index=1, resolution=(32, 32))
+    med = read_med(medpath, response_index)
+    fig = generate_plot(med, resolution)
+
+    fig
+end
+
+
+# If run from the command-line, use cmdargs. Call this script as:
+# $> julia plot_gp.jl med_save_path response_index resolution1 resolution2
+if abspath(PROGRAM_FILE) == @__FILE__
+    medpath = ARGS[1]
+    response_index = parse(Int64, ARGS[2])
+    resolution = (parse(Int64, ARGS[3]), parse(Int64, ARGS[4]))
+
+    fig = plot_gp(medpath, response_index, resolution)
+    display(fig)
+
+    # Keep Julia running while GLMakie window is open
+    while events(fig).window_open[]
+        sleep(0.1)
+    end
+end

@@ -6,10 +6,81 @@
 # Date   : 29.03.2022
 
 
-import textwrap
+import  shutil
+import  textwrap
+import  pathlib
+import  subprocess
 
-import numpy as np
-import pandas as pd
+import  numpy           as      np
+import  pandas          as      pd
+
+from    .__version__    import  __version__
+
+
+
+
+def install(julia_project = None, verbose = True):
+    try:
+        import pysr
+        pysr.install(julia_project, not(verbose))
+    except ImportError:
+        print((
+            "PySR / Julia not found - please follow installation instructions "
+            "from the docs."
+        ))
+        raise
+
+    # Create separate Julia environment for MED, as using GLMakie through
+    # PyJulia segfaults
+    julia = get_julia_executable()
+    julia_project, is_shared = get_julia_project(julia_project)
+
+    if is_shared:
+        io = "stderr" if verbose else "devnull"
+        activate_project = (
+            "using Pkg\n"
+            f'Pkg.activate("{pysr.sr._escape_filename(julia_project)}", '
+            f'shared = Bool({int(is_shared)}), io={io})\n'
+        )
+
+        subprocess.run([
+            julia,
+            "-e",
+            f'''
+            {activate_project}
+            Pkg.add("GLMakie", io={io})
+            Pkg.add("Colors", io={io})
+
+            Pkg.instantiate(io={io})
+            Pkg.precompile(io={io})
+            '''
+        ])
+
+
+
+
+def get_julia_executable():
+
+    candidates = ["julia", "julia.exe", "julia.cmd"]
+    for c in candidates:
+        executable = shutil.which(c)
+        if executable is not None:
+            return executable
+
+    raise FileNotFoundError
+
+
+
+
+def get_julia_project(julia_project):
+    if julia_project is None:
+        is_shared = True
+        julia_project = f"medeq-{__version__}"
+    else:
+        is_shared = False
+        julia_project = pathlib.Path(julia_project)
+    return julia_project, is_shared
+
 
 
 

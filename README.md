@@ -8,10 +8,10 @@ It builds on the fantastic [PySR](https://github.com/MilesCranmer/PySR) and
 [fvGP](https://github.com/lbl-camera/fvGP) libraries to offer a user-facing
 package offering:
 
-- Discovery of symbolic closed-form equations that model multiple responses.
-- Efficient parameter sampling for planning experimental / simulational campaigns.
-- System multi-response uncertainty quantification - and specifically targeting high-variance parameter regions.
-- Automatic parallelisation of complex user simulation scripts on OS Processes and distributed supercomputers.
+- Discovery of symbolic **closed-form equations** that model multiple responses.
+- Efficient **parameter sampling** for planning experimental / simulational campaigns.
+- System multi-response uncertainty quantification - and specifically **targeting high-variance parameter regions**.
+- **Automatic parallelisation** of complex user simulation scripts on OS Processes and distributed supercomputers.
 - Interactive plotting of responses, uncertainties, discovered model outputs.
 - Language-agnostic saving of results found.
 
@@ -25,8 +25,8 @@ with both simulated and experimental results in any domain.
 How does a system behave under different conditions? E.g. drag force acting on a sphere for different flow velocities. M<sup>2</sup>E<sup>3</sup>D can explore
 multiple responses in one of two ways:
 
-1. Locally / manually: running experiments / simulations, then feeding results back to MED.
-2. Massively parallel: for complex simulations that can be launched in Python, MED can automatically change simulation parameters and run them in parallel on OS processes (locally) or SLURM jobs (distributed clusters).
+1. **Locally / manually**: running experiments / simulations, then feeding results back to MED.
+2. **Massively parallel**: for complex simulations that can be launched in Python, MED can automatically change simulation parameters and run them in parallel on OS processes (locally) or SLURM jobs (distributed clusters).
 
 
 ## Show some Code!
@@ -42,15 +42,15 @@ import numpy as np
 # Create DataFrame of MED free parameters and their bounds
 parameters = medeq.create_parameters(
     ["velocity", "viscosity", "radius"],
-    minimums = [-2 * np.pi, -2 * np.pi, -2 * np.pi],
-    maximums = [2 * np.pi, 2 * np.pi, 2 * np.pi],
+    minimums = [-9, -9, -9],
+    maximums = [10, 10, 10],
 )
 
 
 def instrument(x):
     '''Example unknown "experimental response" - a complex non-convex function.
     '''
-    return np.sin(1.1 * x[0]) + np.cos(0.5 * x[1]) + np.cos(0.7 * x[2])
+    return x[0] * np.sin(0.5 * x[1]) + np.cos(1.1 * x[2])
 
 
 # Create MED object, keeping track of free parameters, samples and results
@@ -65,7 +65,7 @@ med.sample(16)
 med.evaluate(instrument)
 
 # Add previous / manually-evaluated responses
-med.augment([[0, 0, 0]], [2])
+med.augment([[0, 0, 0]], [1])
 
 # Save all results to disk - you can load them on another machine
 med.save("med_results")
@@ -76,32 +76,58 @@ med.discover(
     unary_operators = ["cos"],
 )
 
+# Plot interactive 2D slices of responses and uncertainties
+med.plot_gp()
 ```
+
+![MED-Usage-Output](https://github.com/uob-positron-imaging-centre/MED/docs/source/_static/usage-output.png?raw=true "MED-Usage-Output.")
+
+
+
+Here are the equations found by [SymbolicRegression.jl](https://github.com/MilesCranmer/SymbolicRegression.jl)
+at various complexity levels:
+
+```
+==============================
+Hall of Fame:
+-----------------------------------------
+Complexity  Loss       Score     Equation
+1           1.656e+01  1.025e-07  -0.19632196
+2           1.626e+01  1.812e-02  cos(radius)
+3           1.541e+01  5.332e-02  (-0.20152433 * velocity)
+4           1.227e+01  2.278e-01  (velocity * cos(velocity))
+6           8.668e+00  1.739e-01  (velocity * cos(-1.0899653 * velocity))
+8           4.988e-01  1.428e+00  (velocity * cos(1.5935777 + (-0.50125474 * viscosity)))
+10          4.946e-01  4.271e-03  ((-1.016915 * velocity) * cos(7.8330894 + (0.5005289 * viscosity)))
+11          1.241e-01  1.383e+00  (cos(radius) + (velocity * cos(1.5515859 + (-0.49880704 * viscosity))))
+13          0.000e+00  1.151e+01  (cos(1.1000026 * radius) + (velocity * cos(1.5707898 + (-0.50000036 * viscosity))))
+```
+
+Note how it discovered the `sin(x)` term as `cos(1.57 + x)`.
 
 
 ## Getting Started
 
 Before the ``medeq`` library is published to PyPI, you can install it directly from this GitHub repository: 
 
-::
-
-    pip install git+https://github.com/uob-positron-imaging-centre/MED
+```
+$> pip install git+https://github.com/uob-positron-imaging-centre/MED
+```
 
 Alternatively, you can download all the code and run `pip install .` inside its
 directory:
 
-::
-
-    git clone https://github.com/uob-positron-imaging-centre/MED
-    cd MED
-    pip install .
+```
+$> git clone https://github.com/uob-positron-imaging-centre/MED
+$> cd MED
+$MED> pip install .
+```
 
 If you would like to modify the source code and see your changes without reinstalling the package, use the `-e` flag for a *development installation*:
 
-::
-
-    pip install -e .
-
+```
+$MED> pip install -e .
+```
 
 ### Julia
 
@@ -110,9 +136,8 @@ uncertainties and model outputs, you need to install Julia (a
 beautiful, high-performance programming language) on your system and the
 PySR library:
 
-1. Install Julia manually (see [Julia downloads](https://julialang.org/downloads/)).
-2. ``pip install pysr``
-3. ``python -c 'import pysr; pysr.install()'``
+1. Install Julia manually (see [Julia downloads](https://julialang.org/downloads/), version >=1.8 is recommended).
+2. `import medeq; medeq.install()`
 
 
 ## Autonomously Explore System Responses...
@@ -206,12 +231,13 @@ array([[-3.33602115, -0.45639296],
 For a massively parallel workflow, e.g. using a complex simulation, all
 you need is a standalone Python script that:
 
-- Defines its free parameters between two "# MED PARAMETERS START / END"
+- Defines its free parameters between two `# MED PARAMETERS START / END`
   directives.
 - Runs the simulation in _any_ way - define simulation inline, launch it
   on a supercomputer and collect results, etc.
 - Defines a variable "response" for the simulated output of interest -
-  either as a single number or a list of numbers (multi-response).
+  either as a single number or a list of numbers (multi-response), or a
+  dictionary with names for each response.
 
 Here is a simple example of a MED script:
 
@@ -260,6 +286,40 @@ Complexity  Loss       Score     Equation
 3           0.000e+00  1.151e+01  (A + B)
 ```
 
+## Contributing
+You are more than welcome to contribute to this package in the form of library
+improvements, documentation or helpful examples; please submit them either as:
+
+- GitHub issues.
+- Pull requests.
+- Email me at <a.l.nicusan@bham.ac.uk>.
 
 
 
+## Acknowledgements & Funding
+
+The authors gratefully acknowledge the following funding, without which M²E³D
+would not have been possible:
+
+**M²E³D: Multiphase Materials Exploration via Evolutionary Equation Discovery**  
+Royce Materials 4.0 Feasibility and Pilot Scheme Grant, £57,477  
+
+
+## Citing
+If you use this library in your research, you are kindly asked to cite:
+
+> [Paper after publication]
+
+
+This library would not have been possible without the excellent `PySR` and
+`fvGP` packages, which form the very core of the symbolic regression and
+Gaussian Process engines. If you use `medeq` in your published work, please
+also cite:
+
+> Miles Cranmer. (2020). MilesCranmer/PySR v0.2 (v0.2). Zenodo. https://doi.org/10.5281/zenodo.4041459 
+
+> Marcus Michael Noack, Ian Humphrey, elliottperryman, Ronald Pandolfi, & MarcusMichaelNoack. (2022). lbl-camera/fvGP: (3.2.11). Zenodo. https://doi.org/10.5281/zenodo.6147361
+
+
+## Licensing
+The `medeq` library is published under the GPL v3.0 license.

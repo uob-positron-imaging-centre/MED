@@ -6,6 +6,7 @@
 # Date   : 29.03.2022
 
 
+from    .base   import  install
 from    .base   import  create_parameters
 
 from    .med    import  MED
