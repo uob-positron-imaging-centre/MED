@@ -19,10 +19,10 @@ from    .__version__    import  __version__
 
 
 
-def install(julia_project = None, verbose = True):
+def install(verbose = True):
     try:
         import pysr
-        pysr.install(julia_project, not(verbose))
+        pysr.install(None, not(verbose))
     except ImportError:
         print((
             "PySR / Julia not found - please follow installation instructions "
@@ -33,28 +33,20 @@ def install(julia_project = None, verbose = True):
     # Create separate Julia environment for MED, as using GLMakie through
     # PyJulia segfaults
     julia = get_julia_executable()
-    julia_project, is_shared = get_julia_project(julia_project)
+    io = "stderr" if verbose else "devnull"
 
-    if is_shared:
-        io = "stderr" if verbose else "devnull"
-        activate_project = (
-            "using Pkg\n"
-            f'Pkg.activate("{pysr.sr._escape_filename(julia_project)}", '
-            f'shared = Bool({int(is_shared)}), io={io})\n'
-        )
+    subprocess.run([
+        julia,
+        "-e",
+        f'''
+        using Pkg
+        Pkg.add("GLMakie", io={io})
+        Pkg.add("Colors", io={io})
 
-        subprocess.run([
-            julia,
-            "-e",
-            f'''
-            {activate_project}
-            Pkg.add("GLMakie", io={io})
-            Pkg.add("Colors", io={io})
-
-            Pkg.instantiate(io={io})
-            Pkg.precompile(io={io})
-            '''
-        ])
+        Pkg.instantiate(io={io})
+        Pkg.precompile(io={io})
+        '''
+    ])
 
 
 

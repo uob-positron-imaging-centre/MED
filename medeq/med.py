@@ -46,9 +46,7 @@ from    .utilities          import  str_summary
 
 # Optional imports
 try:
-    import pysr
     from pysr import PySRRegressor
-    pysr.silence_julia_warning()
 except ImportError:
     class PySRNotInstalled:
         pass
@@ -211,6 +209,9 @@ class DVASampler:
                 med.parameters["max"].to_numpy(),
             )
             x = np.vstack((prev, x))
+
+            # Remove samples outside given parameters range
+            x = x[(x < 1).all(axis = 1) & (x >= 0).all(axis = 1)]
 
         return discrepancy(x) / np.prod(uncertainty)
 
@@ -864,7 +865,13 @@ class MED:
         2. A simple Python function is supplied that will be evaluated for each
            sample; the function must accept a single NumPy vector.
 
-        >>> med.
+        ::
+
+            def instrument(params):
+                # `params` is a NumPy array of parameter combinations to try
+                return params[0] + params[1]
+
+            med.evaluate(instrument)
 
         3. If a separate Python script was provided when the class was created,
            nothing else is needed; this function will launch jobs and collect
@@ -1080,16 +1087,23 @@ class MED:
         self,
         binary_operators = ["+", "-", "*", "/"],
         unary_operators = [],
+
         maxsize = 50,
-        parsimony = 1e-4,
-        constraints = None,
-        model_selection = "best",
+        maxdepth = None,
+
         niterations = 100,
-        ncyclesperiteration = 32,
         populations = 32,
-        frequency = False,
-        symbolic_utils = True,
-        multithreading = True,
+
+        parsimony = 0.0032,
+        constraints = None,
+        nested_constraints = None,
+
+        denoise = False,
+        select_k_features = None,
+
+        turbo = True,
+        equation_file = "equations.csv",
+
         progress = False,
         **kwargs,
     ):
@@ -1108,18 +1122,23 @@ class MED:
         self.sr = PySRRegressor(
             binary_operators = binary_operators,
             unary_operators = unary_operators,
+
             maxsize = maxsize,
+            maxdepth = maxdepth,
+
+            niterations = niterations,
+            populations = populations,
+
             parsimony = parsimony,
             constraints = constraints,
-            model_selection = model_selection,
-            niterations = niterations,
-            ncyclesperiteration = ncyclesperiteration,
-            populations = populations,
-            useFrequency = frequency,
-            use_symbolic_utils = symbolic_utils,
-            multithreading = multithreading,
-            equation_file = "equations",
-            temp_equation_file = "equations_temp",
+            nested_constraints = nested_constraints,
+
+            denoise = denoise,
+            select_k_features = select_k_features,
+
+            equation_file = equation_file,
+            temp_equation_file = True,
+
             progress = progress,
             **kwargs,
         )
@@ -1501,8 +1520,7 @@ class MED:
         self,
         response = 0,
         resolution = (32, 32),
-        julia_project = None,
-        quiet = False,
+        verbose = True,
     ):
         '''Plot interactive 2D slices of the `response` and uncertainty.
         '''
@@ -1536,11 +1554,9 @@ class MED:
 
         # Run subprocess OS command using the Julia executable
         julia = medeq.base.get_julia_executable()
-        julia_project, _ = medeq.base.get_julia_project(julia_project)
 
         subprocess.run([
             julia,
-            f"--project={julia_project}",
             script,
             medpath,
             str(rid + 1),
@@ -1554,8 +1570,8 @@ class MED:
         f = None,
         colors = px.colors.qualitative.Set1[1:],
     ):
-
-        nrows = 1
+        # Plot samples and uncertainty (columns) for each response (rows)
+        nrows = len(self.gp)
         ncols = 2
         subplot_titles = ["MED Sampling", "GP Uncertainty"]
 
@@ -1574,18 +1590,6 @@ class MED:
 
         xx, yy = np.meshgrid(x, y)
 
-        prediction = self.gp.posterior_mean(
-            np.c_[xx.flatten(), yy.flatten()]
-        )["f(x)"].reshape(nx, ny)
-
-        uncertainty = self.gp.posterior_covariance(
-            np.c_[xx.flatten(), yy.flatten()],
-            variance_only = True,
-        )["v(x)"].reshape(nx, ny)
-
-        if f is not None:
-            real = f(np.vstack((xx.flatten(), yy.flatten()))).reshape(nx, ny)
-
         # Create Figure
         fig = make_subplots(
             rows = nrows,
@@ -1593,82 +1597,97 @@ class MED:
             subplot_titles = subplot_titles,
         )
 
-        fig.add_trace(
-            go.Heatmap(
-                x = x,
-                y = y,
-                z = prediction,
-                colorscale = "magma",
-                showscale = False,
-            ),
-            row = 1,
-            col = 1,
-        )
+        for igp, gp in enumerate(self.gp):
+            prediction = gp.posterior_mean(
+                np.c_[xx.flatten(), yy.flatten()]
+            )["f(x)"].reshape(nx, ny)
 
-        fig.add_trace(
-            go.Heatmap(
-                x = x,
-                y = y,
-                z = uncertainty,
-                colorscale = "magma",
-                colorbar_title = "Variance",
-            ),
-            row = 1,
-            col = 2,
-        )
+            uncertainty = gp.posterior_covariance(
+                np.c_[xx.flatten(), yy.flatten()],
+                variance_only = True,
+            )["v(x)"].reshape(nx, ny)
 
-        if f is not None:
+            if f is not None:
+                real = f(
+                    np.vstack((xx.flatten(), yy.flatten()))
+                ).reshape(nx, ny)
+
             fig.add_trace(
                 go.Heatmap(
                     x = x,
                     y = y,
-                    z = real,
+                    z = prediction,
                     colorscale = "magma",
                     showscale = False,
                 ),
-                row = 1,
-                col = 3,
+                row = 1 + igp,
+                col = 1,
             )
 
-        for i in range(2 if f is None else 3):
-            separate = np.full(len(self.evaluated), True)
+            fig.add_trace(
+                go.Heatmap(
+                    x = x,
+                    y = y,
+                    z = uncertainty,
+                    colorscale = "magma",
+                    colorbar_title = "Variance",
+                ),
+                row = 1 + igp,
+                col = 2,
+            )
 
-            for j, ep in enumerate(self.epochs):
-                separate[ep[0]:ep[1]] = False
-
-                ic = j
-                while ic >= len(colors):
-                    ic -= len(colors)
-
+            if f is not None:
                 fig.add_trace(
-                    go.Scatter(
-                        x = self.evaluated[ep[0]:ep[1], 0],
-                        y = self.evaluated[ep[0]:ep[1], 1],
-                        mode = "markers",
-                        marker_color = colors[ic],
-                        marker_symbol = "x",
-                        hovertext = f"Epoch {j}",
-                        showlegend = False,
+                    go.Heatmap(
+                        x = x,
+                        y = y,
+                        z = real,
+                        colorscale = "magma",
+                        showscale = False,
                     ),
-                    row = 1,
-                    col = i + 1,
+                    row = 1 + igp,
+                    col = 3,
                 )
 
-            separate = self.evaluated[separate]
-            if len(separate):
-                fig.add_trace(
-                    go.Scatter(
-                        x = separate[:, 0],
-                        y = separate[:, 1],
-                        mode = "markers",
-                        marker_color = "white",
-                        marker_symbol = "x",
-                        hovertext = "Manual",
-                        showlegend = False,
-                    ),
-                    row = 1,
-                    col = i + 1,
-                )
+            for i in range(2 if f is None else 3):
+                separate = np.full(len(self.evaluated), True)
+
+                for j, ep in enumerate(self.epochs):
+                    separate[ep[0]:ep[1]] = False
+
+                    ic = j
+                    while ic >= len(colors):
+                        ic -= len(colors)
+
+                    fig.add_trace(
+                        go.Scatter(
+                            x = self.evaluated[ep[0]:ep[1], 0],
+                            y = self.evaluated[ep[0]:ep[1], 1],
+                            mode = "markers",
+                            marker_color = colors[ic],
+                            marker_symbol = "x",
+                            hovertext = f"Epoch {j}",
+                            showlegend = False,
+                        ),
+                        row = igp + 1,
+                        col = i + 1,
+                    )
+
+                separate = self.evaluated[separate]
+                if len(separate):
+                    fig.add_trace(
+                        go.Scatter(
+                            x = separate[:, 0],
+                            y = separate[:, 1],
+                            mode = "markers",
+                            marker_color = "white",
+                            marker_symbol = "x",
+                            hovertext = "Manual",
+                            showlegend = False,
+                        ),
+                        row = igp + 1,
+                        col = i + 1,
+                    )
 
         format_fig(fig)
         return fig
