@@ -39,7 +39,7 @@ os.environ['MPLBACKEND'] = 'Agg'  # avoid tkinter import errors on rtfd.io
 # -- Project information -----------------------------------------------------
 
 project = 'MedEQ'
-copyright = '2022, the MedEQ developers'
+copyright = '2023, the MedEQ developers'
 
 # The full version, including alpha/beta/rc tags
 # Load the package's __version__.py module as a dictionary.
@@ -147,7 +147,7 @@ pygments_style = 'sphinx'
 # a list of builtin themes.
 
 html_theme = "pydata_sphinx_theme"
-html_logo = "_static/logo.png"
+html_logo = "_static/logomin.png"
 
 html_theme_options = {
     # The URL the GitHub icon points to
@@ -161,6 +161,11 @@ html_theme_options = {
 
     # Show `edit this page` button
     "use_edit_page_button": True,
+
+    "logo": {
+        "image_light": "logomin.png",
+        "image_dark": "logomin.png",
+    }
 
     # Links to external sources
     # "icon_links": [
