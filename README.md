@@ -1,3 +1,8 @@
+[![MED](https://github.com/uob-positron-imaging-centre/MED/blob/main/docs/source/_static/logo.png?raw=true)](https://medeq.readthedocs.io/en/latest/)
+
+[![License: MIT](https://img.shields.io/github/license/anicusan/konigcell?style=flat-square)](https://github.com/anicusan/konigcell)
+
+
 # M<sup>2</sup>E<sup>3</sup>D: Multiphase Materials Exploration via Evolutionary Equation Discovery
 ## Driving simulational & experimental discovery, from the micro to the macro
 
