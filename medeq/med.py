@@ -1294,6 +1294,9 @@ class MED:
                 "a response name (str) or index (int)."
             )))
 
+        else:
+            responses = self.responses[:, 0]
+
         # Flush stdout, as the Julia backend will overwrite it
         print(flush = True)
 
