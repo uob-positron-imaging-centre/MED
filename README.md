@@ -1,5 +1,6 @@
 [![MED](https://github.com/uob-positron-imaging-centre/MED/blob/main/docs/source/_static/logo.png?raw=true)](https://medeq.readthedocs.io/en/latest/)
 
+[![Documentation Status](https://readthedocs.org/projects/med/badge/?version=latest&style=flat-square)](https://med.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/github/license/anicusan/konigcell?style=flat-square)](https://github.com/anicusan/konigcell)
 
 
@@ -37,7 +38,7 @@ multiple responses in one of two ways:
 ## Show me some Code!
 
 Here is a minimal example showing the main interface to the ``medeq.MED`` object.
-For automatic parallelisation and other features, see the docs.
+For automatic parallelisation and other features, see the [docs](https://med.readthedocs.io/en/latest/#).
 
 ```python
 import medeq
