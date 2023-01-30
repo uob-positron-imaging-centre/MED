@@ -13,10 +13,37 @@ and submit your changes to the GitHub repository directly!
 
 
 
+MED
+===
+
+These are the main objects you'll work with:
+
 .. autosummary::
    :toctree: generated/
 
    medeq.create_parameters
    medeq.MED
 
+
+Samplers
+========
+
+For experimental planning, this library offers a few different parameter sampling strategies:
+
+.. autosummary::
+   :toctree: generated/
+
+   medeq.LatticeSampler
+   medeq.RandomSampler
+   medeq.DVASampler
+
+
+Auxiliary
+=========
+
+.. autosummary::
+   :toctree: generated/
+
+   medeq.sampler
+   medeq.med.MEDPaths
 

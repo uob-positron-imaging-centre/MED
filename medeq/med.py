@@ -131,6 +131,39 @@ def sampler(f):
 class DVASampler:
     '''Parameter sampler that targets the most uncertain regions while
     maximising the area covered.
+
+    MED samplers return values between [0, 1), which can then be upscaled to
+    individual parameter ranges.
+
+    Parameters
+    ----------
+    d : int
+        Sampling dimensionality - i.e. number of parameters.
+
+    seed : int, optional
+        Seed for deterministic random sampling.
+
+    Examples
+    --------
+    Simple, seeded sample generation:
+
+    .. code-block::
+
+        import medeq
+        sampler = medeq.DVASampler(3, seed=123)
+        sampler.sample(5, None)
+
+    If you have a ``MED`` object, you can pass it as a second parameter to the
+    `sample` method to specifically target high-uncertainty regions:
+
+    .. code-block::
+
+        import medeq
+        parameters = medeq.create_parameters(...)
+        med = medeq.MED(parameters, ...)
+
+        sampler = medeq.DVASsampler(3)
+        sampler.sample(5, med)
     '''
 
     def __init__(self, d, seed = None):
@@ -224,6 +257,29 @@ class DVASampler:
 
 
 class RandomSampler:
+    '''Parameter sampler using uniform random distributions.
+
+    MED samplers return values between [0, 1), which can then be upscaled to
+    individual parameter ranges.
+
+    Parameters
+    ----------
+    d : int
+        Sampling dimensionality - i.e. number of parameters.
+
+    seed : int, optional
+        Seed for deterministic random sampling.
+
+    Examples
+    --------
+    Simple, seeded sample generation:
+
+    .. code-block::
+
+        import medeq
+        sampler = medeq.RandomSampler(3, seed=123)
+        sampler.sample(5, None)
+    '''
 
     def __init__(self, d, seed = None):
         self.d = int(d)
@@ -243,6 +299,30 @@ class RandomSampler:
 
 
 class LatticeSampler:
+    '''Parameter sampler following a regular lattice - this also corresponds
+    to a full factorial design of experiments.
+
+    MED samplers return values between [0, 1), which can then be upscaled to
+    individual parameter ranges.
+
+    Parameters
+    ----------
+    d : int
+        Sampling dimensionality - i.e. number of parameters.
+
+    seed : int, optional
+        Seed for deterministic random sampling.
+
+    Examples
+    --------
+    Simple, seeded sample generation:
+
+    .. code-block::
+
+        import medeq
+        sampler = medeq.RandomSampler(3, seed=123)
+        sampler.sample(5, None)
+    '''
 
     def __init__(self, d, seed = None):
         self.d = int(d)
@@ -317,7 +397,7 @@ class MEDPaths:
 
 class MED:
     '''Autonomously explore system responses and discover underlying physical
-    laws / correlations.
+    laws or correlations.
 
     Exploring systems responses can be done in one of two ways:
 
@@ -445,7 +525,7 @@ class MED:
     beautiful, high-performance programming language) on your system and the
     PySR library:
 
-    1. Install Julia manually (see `https://julialang.org/downloads/`_).
+    1. Install Julia manually (see https://julialang.org/downloads/).
     2. ``pip install pysr``
     3. ``python -c 'import pysr; pysr.install()'``
 
@@ -477,43 +557,44 @@ class MED:
         script.
 
     samples : (M, P) np.ndarray
-        A
+        The parameter samples generated.
 
     responses : (N, K) np.ndarray or None
-        A
+        The responses evaluated.
 
     response_names : list[str] or None
-        A
+        The response names, if given.
 
     epochs : list[tuple[int, int]]
-        A
+        The sample generation-evaluation batches, as indices ranges within
+        `samples` and `responses`.
 
     seed : int
-        A
+        The random seed used for deterministic results.
 
     verbose : int
-        A
+        Verbosity level, between 0 and 5.
 
     queue : np.ndarray
-        [Generated]
+        [Generated] The queue of unevaluated samples.
 
     evaluated : (N, P) np.ndarray
-        [Generated]
+        [Generated] The evaluated samples.
 
     results : pd.DataFrame
-        [Generated]
+        [Generated] Neat DataFrame of samples tried and corresponding results.
 
     variances : (N, K) np.ndarray
-        [Generated]
+        [Generated] The uncertainties in the results found.
 
     gp : list[fvgp.gp.GP] or None
-        [Internal]
+        [Internal] List of Gaussian Process objects for each response.
 
     sr : pysr.PySRRegressor or None
-        [Internal]
+        [Internal] PySR symbolic regressor for equation discovery.
 
     paths : medeq.med.MEDPaths or None
-        [Internal]
+        [Internal] Structure containing paths for saving the MED object.
     '''
 
     def __init__(
@@ -654,6 +735,8 @@ class MED:
 
 
     def save(self, directory = None):
+        '''Save all data about the MED object to disk in a given `directory`.
+        '''
         # Instantiate MEDPaths object handling directory hierarchy
         if directory is None:
             # Include the random seed used in the `med_seed<seed>` dirpath
@@ -780,6 +863,9 @@ class MED:
 
 
     def sample(self, n):
+        '''Generate and return ``n`` new parameter samples; they will be
+        added to the ``.samples`` and ``.queue`` attribute.
+        '''
         new = self.sampler.sample(n, self)
         new = np.asarray(new, dtype = float)
 
@@ -1085,7 +1171,9 @@ class MED:
 
     def discover(
         self,
-        binary_operators = ["+", "-", "*", "/"],
+        response = None,
+
+        binary_operators = ["+", "-", "*", "/", "^"],
         unary_operators = [],
 
         maxsize = 50,
@@ -1107,6 +1195,81 @@ class MED:
         progress = False,
         **kwargs,
     ):
+        '''Discover analytical models of varying complexity for the evaluated
+        samples and responses.
+
+        The most important equation discovery parameters are given to this
+        method; a full reference is here: https://astroautomata.com/PySR/api/
+
+        Parameters
+        ----------
+        response : str or int, optional
+            The response name or index to find an equation for; only needs to
+            be specified for more than 1 reponse.
+
+        binary_operators : list[str], default ["+", "-", "*", "/", "^"]
+            Operators taking two real numbers as input, using Julia syntax,
+            e.g. ``+(x, y) === x + y``. Can define custom operators like
+            ``binaryfunc(x, y) = x^2 * y``.
+
+        unary_operators : list[str], default []
+            Operators taking a single real number as input, using Julia syntax,
+            e.g. ``sin(x)`` or ``log(x)``. Can define custom operators like
+            ``unaryfunc(x) = x^2``.
+
+        maxsize : int, default 50
+            Maximum size of equation; smaller values correpond to shorter
+            equations and faster searching.
+
+        maxdepth : int, optional
+            If defined, limit depth of equation tree - i.e. stacked operations.
+
+        niterations : int, default 100
+            Number of equation finding iterations to run.
+
+        populations : int, default 32
+            Number of equation populations to use; a larger value corresponds
+            to more equations being sampled and slower search.
+
+        parsimony : float, default 0.0032
+            How much to punish complexity; larger value prefers smaller
+            expressions.
+
+        constraints : dict[str], optional
+            Optional dictionary of complexity constraints on operators, e.g.
+            don't allow the exponent of a power operator to have complexity
+            larger than 2 with `constraints = {"pow": (-1, 2)}`; -1 means
+            any complexity.
+
+        nested_constraints : dict[str], optional
+            Number of times a combination of operators can be nested, e.g.
+            {"sin": {"cos": 0}} specifies that `cos` cannot be found inside a
+            `sin`.
+
+        denoise : bool, default False
+            Symbolic regression should be robust with noise, but can further
+            denoise data with a Gaussian Process.
+
+        select_k_features : int, optional
+            If defined, use at most `k` parameters from the given samples.
+
+        turbo : bool, default True
+            Whether to use extra, experimental optimisations internally.
+
+        equation_file : str, default "equations.csv"
+            Where to save equations.
+
+        progress : bool, default False
+            Whether to show interactive equation discovery progress.
+
+        **kwargs : other keyword arguments
+            Other keyword arguments to be passed to PySR.
+
+        Returns
+        -------
+        list[Equation]
+            List of equations found.
+        '''
         # Check we have data to discover equations for
         if not len(self.responses):
             raise ValueError(textwrap.fill((
@@ -1115,10 +1278,25 @@ class MED:
                 "e.g. with `MED.sample` and `MED.evaluate`."
             )))
 
+        if response is not None:
+            if isinstance(response, str):
+                response_index = self.response_names.index(response)
+                responses = self.responses[:, response_index]
+            else:
+                response_index = int(response)
+                responses = self.responses[:, response_index]
+
+        elif self.responses.shape[1] > 1:
+            raise ValueError(textwrap.fill((
+                f"There are {self.responses.shape[1]} different responses "
+                "saved (i.e. number of columns in `self.responses`). Please "
+                "specify which should be used to discover equations as "
+                "a response name (str) or index (int)."
+            )))
+
         # Flush stdout, as the Julia backend will overwrite it
         print(flush = True)
 
-        # TODO: use equation_file to save equations found
         self.sr = PySRRegressor(
             binary_operators = binary_operators,
             unary_operators = unary_operators,
@@ -1144,8 +1322,8 @@ class MED:
         )
 
         names = [c.replace(" ", "_") for c in self.parameters.index]
-        self.sr.fit(self.evaluated, self.responses, variable_names = names)
-        return self.sr
+        self.sr.fit(self.evaluated, responses, variable_names = names)
+        return self.sr.equations_
 
 
     def _generate_script(self, script_path, scheduler):
@@ -1688,6 +1866,152 @@ class MED:
                         row = igp + 1,
                         col = i + 1,
                     )
+
+        format_fig(fig)
+        return fig
+
+
+    def plot_samples(
+        self,
+        colors = px.colors.qualitative.Set1[1:],
+        marker_size = 10,
+        **kwargs,
+    ):
+
+        # Check we have samples generated
+        if len(self.samples) == 0:
+            raise ValueError(textwrap.fill((
+                "No samples were generated (`.sample(N)`) or introduced "
+                "(`.augment(...)`). Please add samples before plotting."
+            )))
+
+        # Extract samples and number of dimensions
+        samples = self.samples
+        ndim = samples.shape[1]
+
+        # Create only 1D, 2D, 3D plots
+        if ndim > 3:
+            raise ValueError(textwrap.fill((
+                f"The samples introduced have `samples.shape[1] = {ndim}` "
+                "dimensions, which cannot be visualised using static Plotly "
+                "plots. Use the `plot_gp()` method for an interactive Julia "
+                "plot with interactive slicing."
+            )))
+
+        fig = go.Figure()
+
+        # Plot individual epochs + manually-added samples
+        if ndim <= 2:
+            separate = np.full(len(samples), True)
+
+            for i, ep in enumerate(self.epochs):
+                separate[ep[0]:ep[1]] = False
+
+                ic = i
+                while ic >= len(colors):
+                    ic -= len(colors)
+
+                x = samples[ep[0]:ep[1], 0]
+
+                if ndim == 1:
+                    y = np.zeros(ep[1] - ep[0])
+                else:
+                    y = samples[ep[0]:ep[1], 1]
+
+                fig.add_trace(
+                    go.Scatter(
+                        x = x,
+                        y = y,
+                        mode = "markers",
+                        marker_color = colors[ic],
+                        marker_symbol = "x",
+                        marker_size = marker_size,
+                        hovertext = f"Epoch {i}",
+                        showlegend = False,
+                        **kwargs,
+                    ),
+                )
+
+            if len(separate):
+                x = samples[separate, 0]
+
+                if ndim == 1:
+                    y = np.zeros(separate.sum())
+                else:
+                    y = samples[separate, 1]
+
+                fig.add_trace(
+                    go.Scatter(
+                        x = x,
+                        y = y,
+                        mode = "markers",
+                        marker_color = "black",
+                        marker_symbol = "x",
+                        marker_size = marker_size,
+                        hovertext = "Manual",
+                        showlegend = False,
+                        **kwargs,
+                    ),
+                )
+
+            if ndim == 1:
+                fig.update_layout(
+                    xaxis_title = self.parameters.index[0],
+                    yaxis_title = "",
+                    yaxis_showticklabels = False,
+                )
+            else:
+                fig.update_layout(
+                    xaxis_title = self.parameters.index[0],
+                    yaxis_title = self.parameters.index[1],
+                )
+
+        if ndim == 3:
+            separate = np.full(len(samples), True)
+
+            for i, ep in enumerate(self.epochs):
+                separate[ep[0]:ep[1]] = False
+
+                ic = i
+                while ic >= len(colors):
+                    ic -= len(colors)
+
+                fig.add_trace(
+                    go.Scatter3d(
+                        x = samples[ep[0]:ep[1], 0],
+                        y = samples[ep[0]:ep[1], 1],
+                        z = samples[ep[0]:ep[1], 2],
+                        mode = "markers",
+                        marker_color = colors[ic],
+                        marker_symbol = "x",
+                        marker_size = marker_size,
+                        hovertext = f"Epoch {i}",
+                        showlegend = False,
+                        **kwargs,
+                    ),
+                )
+
+            if len(separate):
+                fig.add_trace(
+                    go.Scatter3d(
+                        x = samples[separate, 0],
+                        y = samples[separate, 1],
+                        z = samples[separate, 2],
+                        mode = "markers",
+                        marker_color = "black",
+                        marker_symbol = "x",
+                        marker_size = marker_size,
+                        hovertext = "Manual",
+                        showlegend = False,
+                        **kwargs,
+                    ),
+                )
+
+            fig.update_scenes(
+                xaxis_title = self.parameters.index[0],
+                yaxis_title = self.parameters.index[1],
+                zaxis_title = self.parameters.index[2],
+            )
 
         format_fig(fig)
         return fig

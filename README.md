@@ -10,7 +10,7 @@ M<sup>2</sup>E<sup>3</sup>D discovers equations, models and correlations
 underpinning experimental data.
 
 It builds on the fantastic [PySR](https://github.com/MilesCranmer/PySR) and
-[fvGP](https://github.com/lbl-camera/fvGP) libraries to offer a user-facing
+[fvGP](https://github.com/lbl-camera/fvGP) libraries to build a user-facing
 package offering:
 
 - Discovery of symbolic **closed-form equations** that model multiple responses.
@@ -34,7 +34,7 @@ multiple responses in one of two ways:
 2. **Massively parallel**: for complex simulations that can be launched in Python, MED can automatically change simulation parameters and run them in parallel on OS processes (locally) or SLURM jobs (distributed clusters).
 
 
-## Show some Code!
+## Show me some Code!
 
 Here is a minimal example showing the main interface to the ``medeq.MED`` object.
 For automatic parallelisation and other features, see the docs.

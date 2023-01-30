@@ -12,6 +12,19 @@ The MedEQ Library's Documentation
 Autonomously driving equation discovery, from the micro to the macro, from
 laptops to supercomputers.
 
+It builds on the fantastic ``PySR`` (https://github.com/MilesCranmer/PySR) and
+``fvGP`` (https://github.com/lbl-camera/fvGP) libraries to create a user-facing
+package offering:
+
+- Discovery of symbolic **closed-form equations** that model multiple responses.
+- Efficient **parameter sampling** for planning experimental / simulational campaigns.
+- System multi-response uncertainty quantification - and specifically **targeting high-variance parameter regions**.
+- **Automatic parallelisation** of complex user simulation scripts on OS Processes and distributed supercomputers.
+- Interactive plotting of responses, uncertainties, discovered model outputs.
+- Language-agnostic saving of results found.
+
+MedEQ was developed to discover physical laws and correlations in chemical engineering, but it is
+data-agnostic - and works with both simulated and experimental results in any domain.
 
 
 Tutorials and Documentation
@@ -27,7 +40,7 @@ You are more than welcome to contribute to this library in the form of library
 improvements, documentation or helpful examples; please submit them either as:
 
 - GitHub issues.
-- Pull requests (superheroes only).
+- Pull requests.
 - Email me at <a.l.nicusan@bham.ac.uk>.
 
 
