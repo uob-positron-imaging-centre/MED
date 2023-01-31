@@ -35,7 +35,7 @@ med.evaluate(instrument)
 # Add previous / manually-evaluated responses
 med.augment([[0, 0, 0]], [1])
 
-# Save all results to disk - you can load them on another machine
+# Save all results to disk - you can load them anywhere with `medeq.MED.load(filepath)`
 med.save("med_results")
 
 # Discover underlying equation; tell MED what operators it may use
@@ -43,6 +43,9 @@ med.discover(
     binary_operators = ["+", "-", "*", "/"],
     unary_operators = ["cos"],
 )
+
+# Run sensitivity analysis on measurements
+med.sensitivity(algorithm = "pawn")
 
 # Plot interactive 2D slices of responses and uncertainties
 med.plot_gp()

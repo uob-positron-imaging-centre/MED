@@ -195,15 +195,17 @@ function generate_plot!(med, fig, sliders, resolution)
             hmap_pred = contourf!(ax1, x, y, ypred; colormap = cmap)
             Colorbar(fig[j, 2 * i], hmap_pred, #=label = "Response"=#)
 
-            scatter_pred = scatter!(
-                ax1,
-                samples,
-                markersize = markersize,
-                # marker = :xcross,
-                color = colorant"rgb(8,48,107)",
-                strokewidth = 1,
-                strokecolor = :white,
-            )
+            # TODO: Observables don't like changing vector lengths; perhaps always plot all points
+            # but use sizes of 0 for hidden ones?
+            # scatter_pred = scatter!(
+            #     ax1,
+            #     samples,
+            #     markersize = markersize,
+            #     # marker = :xcross,
+            #     color = colorant"rgb(8,48,107)",
+            #     strokewidth = 1,
+            #     strokecolor = :white,
+            # )
 
             # Plot uncertainties
             ax2 = Axis(fig[i, 2 * j - 1]; xlabel = med.parameters[i], ylabel = med.parameters[j])
@@ -211,15 +213,15 @@ function generate_plot!(med, fig, sliders, resolution)
             hmap_var  = contourf!(ax2, x, y, yvar; colormap = cmap)
             Colorbar(fig[i, 2 * j], hmap_var, #=label = "Variance"=#)
 
-            scatter_pred = scatter!(
-                ax2,
-                samples,
-                markersize = markersize,
-                # marker = :xcross,
-                color = colorant"rgb(8,48,107)",
-                strokewidth = 1,
-                strokecolor = :white,
-            )
+            # scatter_pred = scatter!(
+            #     ax2,
+            #     samples,
+            #     markersize = markersize,
+            #     # marker = :xcross,
+            #     color = colorant"rgb(8,48,107)",
+            #     strokewidth = 1,
+            #     strokecolor = :white,
+            # )
         end
     end
 
@@ -290,15 +292,15 @@ function generate_plot!(med, fig, sliders, resolution)
         band!(ax, sx, syvar_lo, syvar_hi, color = colorant"rgb(107,174,214)")
         lines!(ax, sx, sypred, color = colorant"rgb(8,81,156)")
 
-        scatter!(
-            ax,
-            ssamples,
-            markersize = smarkersize,
-            # marker = :xcross,
-            color = colorant"rgb(8,48,107)",
-            strokewidth = 1,
-            strokecolor = :white,
-        )
+        # scatter!(
+        #     ax,
+        #     ssamples,
+        #     markersize = smarkersize,
+        #     # marker = :xcross,
+        #     color = colorant"rgb(8,48,107)",
+        #     strokewidth = 1,
+        #     strokecolor = :white,
+        # )
 
         on(spredicted) do _
             reset_limits!(ax)
