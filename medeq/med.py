@@ -12,6 +12,7 @@ import  sys
 import  contextlib
 import  pickle
 import  inspect
+import  importlib
 import  textwrap
 import  warnings
 import  subprocess
@@ -20,10 +21,6 @@ from    datetime            import  datetime
 
 import  numpy               as      np
 import  pandas              as      pd
-
-import  cma
-from    fvgp.gp             import  GP
-from    scipy.stats.qmc     import  discrepancy, LatinHypercube
 
 import  toml
 from    tqdm                import  tqdm
@@ -39,18 +36,26 @@ import  plotly.express      as      px
 import  plotly.graph_objs   as      go
 from    plotly.subplots     import  make_subplots
 
-import  medeq
-from    .__version__        import  __version__
-from    .utilities          import  str_summary
-
 
 # Optional imports
 try:
+    import pysr
     from pysr import PySRRegressor
+    pysr.julia_helpers.init_julia(julia_kwargs = {"threads": "auto"})
 except ImportError:
     class PySRNotInstalled:
         pass
     PySRRegressor = PySRNotInstalled
+
+
+# Internal imports
+import  cma
+from    fvgp.gp             import  GP
+from    scipy.stats.qmc     import  discrepancy, LatinHypercube
+
+import  medeq
+from    .__version__        import  __version__
+from    .utilities          import  str_summary
 
 
 
@@ -1176,7 +1181,7 @@ class MED:
         binary_operators = ["+", "-", "*", "/", "^"],
         unary_operators = [],
 
-        maxsize = 50,
+        maxsize = 30,
         maxdepth = None,
 
         niterations = 100,
@@ -1217,7 +1222,7 @@ class MED:
             e.g. ``sin(x)`` or ``log(x)``. Can define custom operators like
             ``unaryfunc(x) = x^2``.
 
-        maxsize : int, default 50
+        maxsize : int, default 30
             Maximum size of equation; smaller values correpond to shorter
             equations and faster searching.
 
@@ -1267,8 +1272,9 @@ class MED:
 
         Returns
         -------
-        list[Equation]
-            List of equations found.
+        pandas.DataFrame
+            Table of equations found with columns [complexity, loss, score,
+            equation_string].
         '''
         # Check we have data to discover equations for
         if not len(self.responses):
@@ -1326,7 +1332,9 @@ class MED:
 
         names = [c.replace(" ", "_") for c in self.parameters.index]
         self.sr.fit(self.evaluated, responses, variable_names = names)
-        return self.sr.equations_
+
+        equations = self.sr.equations_.iloc[:, :4]
+        return equations
 
 
     def _generate_script(self, script_path, scheduler):
@@ -1695,6 +1703,143 @@ class MED:
                 warnings.warn(msg, RuntimeWarning, stacklevel = 3)
 
                 del self.response_names[nresp:]
+
+
+    def sensitivity(
+        self,
+        algorithm,
+        response = None,
+        shorten = True,
+        verbose = True,
+        **kwargs,
+    ):
+        '''Run sensitivity analysis on recorded responses using an `SALib`
+        algorithm
+
+        You can find all details (API, papers presenting algorithms) at
+        https://salib.readthedocs.io/en/latest/api.html.
+
+        Parameters
+        ----------
+        algorithm : str
+            An SALib algorithm to use; unless you followed a specific input
+            distribution, you should use an algorithm that is "compatible with
+            all samplers": "rbd_fast", "delta", "pawn", "hdmr". HDMR is in my
+            experience the best one, but it requires at least 300 inputs;
+            otherwise "delta" behaved well with few measurements. See
+            https://salib.readthedocs.io/en/latest/api.html for all available
+            algorithms.
+
+        response : str or int, optional
+            The response name or index to find an equation for; only needs to
+            be specified for more than 1 reponse.
+
+        shorten : bool, default True
+            Shorten input parameter names, e.g. "Fluid Visc (Pa) -> FVP",
+            "fluid_visc_pa -> FVP".
+
+        verbose : bool, default True
+            Use "print_to_console = True" while running the SALib algorithm.
+
+        Returns
+        -------
+        pandas.DataFrame or dict
+            SALib analysis results, as DataFrame if possible, otherwise as the
+            raw `dict`.
+        '''
+
+        # Check we have results
+        if not len(self.responses):
+            raise ValueError(textwrap.fill((
+                "No responses were saved in MED. Before running sensitivity "
+                "analysis please sample the parameter space and collect some "
+                "responses, e.g. with `MED.sample` and `MED.evaluate`."
+            )))
+
+        # Extract result
+        if response is not None:
+            if isinstance(response, str):
+                response_index = self.response_names.index(response)
+                responses = self.responses[:, response_index]
+            else:
+                response_index = int(response)
+                responses = self.responses[:, response_index]
+
+        elif self.responses.shape[1] > 1:
+            raise ValueError(textwrap.fill((
+                f"There are {self.responses.shape[1]} different responses "
+                "saved (i.e. number of columns in `self.responses`). Please "
+                "specify which should be used to discover equations as "
+                "a response name (str) or index (int)."
+            )))
+
+        else:
+            responses = self.responses[:, 0]
+
+        # Import algorithm from SALib
+        api = importlib.import_module(f"SALib.analyze.{algorithm}")
+        sig = inspect.signature(api.analyze)
+
+        # Regex for shortening parameter names
+        splitter = re.compile("_| ")
+        capital_finder = re.compile("[A-Z]")
+
+        def shorten_name(name):
+            # Shorten a name by:
+            #   - split by underscore and space
+            #   - extract uppercase letters or capitalise first letter
+            #
+            # e.g. "fluid visc_m" -> "FVM", "FluidVisc_m" -> "FVM"
+            initials = []
+            for s in splitter.split(name):
+                capitals = capital_finder.findall(s)
+                if len(capitals):
+                    initials.extend(capitals)
+                else:
+                    initials.append(s[0].upper())
+
+            return "".join(initials)
+
+        if not shorten:
+            names = self.parameters.index.to_list()
+        else:
+            names = [shorten_name(p) for p in self.parameters.index]
+
+            # Check for duplicates
+            seen = set()
+            duplicates = set()
+            for name in names:
+                if name in seen:
+                    duplicates.add(name)
+                else:
+                    seen.add(name)
+
+            for dup in duplicates:
+                idup = 1
+                for i in range(len(names)):
+                    if names[i] == dup:
+                        names[i] = names[i] + str(idup)
+                        idup += 1
+
+        # Create SALib problem dictionary
+        problem = dict(
+            num_vars = len(self.parameters),
+            names = names,
+            bounds = self.parameters[["min", "max"]].to_numpy(),
+        )
+
+        # Check if options are available in algorithm signature
+        if verbose and "print_to_console" in sig.parameters.keys():
+            kwargs["print_to_console"] = True
+
+        # Run sensitivity analysis and return DataFrame if possible
+        result = api.analyze(problem, self.evaluated, responses, **kwargs)
+
+        if hasattr(result, "to_df"):
+            return result.to_df()
+        else:
+            return result
+
 
 
     def plot_gp(
