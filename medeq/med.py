@@ -1714,7 +1714,7 @@ class MED:
         **kwargs,
     ):
         '''Run sensitivity analysis on recorded responses using an `SALib`
-        algorithm
+        algorithm.
 
         You can find all details (API, papers presenting algorithms) at
         https://salib.readthedocs.io/en/latest/api.html.
@@ -1896,6 +1896,9 @@ class MED:
         f = None,
         colors = px.colors.qualitative.Set1[1:],
     ):
+        '''Plot 2D response with optional analytical `f` evaluation - use
+        `plot_gp` for interactive higher-dimensional plotting.
+        '''
         # Plot samples and uncertainty (columns) for each response (rows)
         nrows = len(self.gp)
         ncols = 2
@@ -2025,6 +2028,9 @@ class MED:
         marker_size = 10,
         **kwargs,
     ):
+        '''Plot 1D, 2D or 3D generated samples' distribution - use `plot_gp`
+        for interactive higher-dimensional plotting.
+        '''
 
         # Check we have samples generated
         if len(self.samples) == 0:
