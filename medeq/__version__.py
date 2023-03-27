@@ -6,6 +6,6 @@
 # Date   : 29.03.2022
 
 
-VERSION = (0, 2, 0)
+VERSION = (0, 2, 1)
 
 __version__ = '.'.join(map(str, VERSION))

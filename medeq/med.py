@@ -1630,8 +1630,8 @@ class MED:
             for i in range(nresp):
                 self.gp[i] = GP(
                     len(self.parameters),
-                    points = self.evaluated,
-                    values = responses[:, i],
+                    self.evaluated,
+                    responses[:, i],
                     init_hyperparameters = np.ones(1 + len(self.parameters)),
                     variances = np.abs(0.01 * responses[:, i]),
                     use_inv = True,
