@@ -314,7 +314,7 @@ Royce Materials 4.0 Feasibility and Pilot Scheme Grant, £57,477
 ## Citing
 If you use this library in your research, you are kindly asked to cite:
 
-> [Paper after publication]
+> Nicusan, A., & Windows-Yule, K. (2022). M2E3D: Multiphase Materials Exploration via Evolutionary Equation Discovery (Version 0.1.0) [Computer software]
 
 
 This library would not have been possible without the excellent `PySR` and

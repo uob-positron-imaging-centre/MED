@@ -10,4 +10,6 @@ authors:
 
 title: "M2E3D: Multiphase Materials Exploration via Evolutionary Equation Discovery"
 version: 0.1.0
+doi: 10.5281/zenodo.7215238
 date-released: 2022-04-30
+url: "https://github.com/uob-positron-imaging-centre/MED"
